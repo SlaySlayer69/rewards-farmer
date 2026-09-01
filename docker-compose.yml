@@ -108,13 +108,15 @@ services:
       # One account's directory, when REWARDS_ACCOUNTS is in use. Each account
       # is signed in separately, since each is a Microsoft account of its own.
       REWARDS_SIGNIN_ACCOUNT: ${REWARDS_SIGNIN_ACCOUNT:-}
-      # Optional. Without it the VNC server takes any connection, which is why
-      # the port below is published on the host's loopback only.
+      # Optional with the loopback default, required when the bind below is not
+      # loopback: the script refuses to put an unauthenticated screen with a
+      # signed-in browser on it onto the network.
       REWARDS_VNC_PASSWORD: ${REWARDS_VNC_PASSWORD:-}
+      REWARDS_VNC_BIND: ${REWARDS_VNC_BIND:-127.0.0.1}
     ports:
-      # Loopback on purpose. An unauthenticated screen with a signed-in browser
-      # on it has no business being on the LAN, let alone reachable from
-      # anywhere the host is.
-      - "127.0.0.1:5900:5900"
+      # Loopback by default, reached with `ssh -N -L 5900:127.0.0.1:5900`. Set
+      # REWARDS_VNC_BIND=0.0.0.0 (with a password) when you cannot SSH into this
+      # machine at all, and unset it again once the sign-in is done.
+      - "${REWARDS_VNC_BIND:-127.0.0.1}:5900:5900"
     volumes:
       - ./data-dir:/app/data-dir

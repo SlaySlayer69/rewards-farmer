@@ -24,6 +24,38 @@
 # profile signed in in this container works in this container.
 set -eu
 
+# A screen with a signed-in browser on it, so the two ways to reach it are an
+# SSH tunnel to a loopback-published port, or the LAN with a password. Never
+# the LAN without one: REWARDS_VNC_BIND says which the host is publishing, and
+# anything but loopback has to bring a password with it.
+BIND="${REWARDS_VNC_BIND:-127.0.0.1}"
+
+case "$BIND" in
+	127.0.0.1|localhost|::1) LOOPBACK=1 ;;
+	*) LOOPBACK=0 ;;
+esac
+
+if [ "$LOOPBACK" = "0" ] && [ -z "${REWARDS_VNC_PASSWORD:-}" ]; then
+	echo "signin: REWARDS_VNC_BIND=$BIND publishes this screen beyond the host, and" >&2
+	echo "        it would be a signed-in browser anyone on the network can drive." >&2
+	echo "        Set REWARDS_VNC_PASSWORD, or leave the bind at 127.0.0.1 and reach" >&2
+	echo "        it through an SSH tunnel." >&2
+
+	exit 1
+fi
+
+# The image has all four. Run outside it - the native install does - and a
+# missing one otherwise fails in the background, leaving a script that reports
+# a browser closing that never opened.
+for binary in Xvfb x11vnc fluxbox microsoft-edge; do
+	command -v "$binary" >/dev/null 2>&1 || {
+		echo "signin: $binary is not installed." >&2
+		echo "        apt-get install -y xvfb x11vnc fluxbox microsoft-edge-stable" >&2
+
+		exit 1
+	}
+done
+
 DISPLAY_NUMBER="${REWARDS_SIGNIN_DISPLAY:-99}"
 export DISPLAY=":${DISPLAY_NUMBER}"
 
@@ -41,6 +73,7 @@ cleanup() {
 	# Edge writes the profile as it exits, and a profile whose browser was
 	# killed keeps a lock naming a process that no longer exists.
 	[ -n "${EDGE_PID:-}" ] && kill "$EDGE_PID" 2>/dev/null || true
+	[ -n "${PASSWORD_FILE:-}" ] && rm -f "$PASSWORD_FILE" || true
 	[ -n "${VNC_PID:-}" ] && kill "$VNC_PID" 2>/dev/null || true
 	[ -n "${WM_PID:-}" ] && kill "$WM_PID" 2>/dev/null || true
 	[ -n "${XVFB_PID:-}" ] && kill "$XVFB_PID" 2>/dev/null || true
@@ -64,12 +97,18 @@ WM_PID=$!
 
 # 0.0.0.0 inside the container, because a published port is forwarded to the
 # container's interface and never reaches its loopback. What keeps this off the
-# network is the host side: compose publishes it on 127.0.0.1 only.
+# network is the host side, which publishes on BIND.
 if [ -n "${REWARDS_VNC_PASSWORD:-}" ]; then
-	x11vnc -display "$DISPLAY" -forever -shared -passwd "$REWARDS_VNC_PASSWORD" -quiet &
+	# Via a file rather than -passwd, which puts the password in the command
+	# line where every process on the machine can read it.
+	PASSWORD_FILE="$(mktemp)"
+	chmod 600 "$PASSWORD_FILE"
+	printf '%s\n' "$REWARDS_VNC_PASSWORD" > "$PASSWORD_FILE"
+
+	x11vnc -display "$DISPLAY" -forever -shared -passwdfile "$PASSWORD_FILE" -quiet &
 else
-	echo "signin: no REWARDS_VNC_PASSWORD set; the port is published on the host's"
-	echo "        loopback only, so connect from the host or through an SSH tunnel."
+	echo "signin: no REWARDS_VNC_PASSWORD set; the port is published on ${BIND} only,"
+	echo "        so connect from the host or through an SSH tunnel."
 	x11vnc -display "$DISPLAY" -forever -shared -nopw -quiet &
 fi
 

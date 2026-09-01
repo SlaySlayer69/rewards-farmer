@@ -139,7 +139,16 @@ The port is published on the container's loopback only, so tunnel it from your d
 ssh -N -L 5900:127.0.0.1:5900 root@<container ip>
 ```
 
-Sign in on `rewards.bing.com` **and** on `bing.com`, accept the consent banner if your market shows one, then close the browser window. Set `REWARDS_VNC_PASSWORD` in `.env` if you want the VNC server to ask for one as well.
+That needs a way into the container: `create-lxc.sh` authorises the Proxmox host's `/root/.ssh/authorized_keys` for you, or takes `SSH_KEYS=<file>` or `PASSWORD=<password>`. **If you cannot SSH in at all**, publish the port on the LAN for the one sign-in instead, which requires a password:
+
+```sh
+REWARDS_VNC_BIND=0.0.0.0 REWARDS_VNC_PASSWORD=<something> \
+  docker compose run --rm --service-ports signin
+```
+
+Unset both again afterwards. Without a password on a non-loopback bind the script refuses to start: it would be a signed-in browser anyone on the network can drive.
+
+Sign in on `rewards.bing.com` **and** on `bing.com`, accept the consent banner if your market shows one, then close the browser window.
 
 For more than one account, sign each in against its own directory:
 

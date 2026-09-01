@@ -42,6 +42,13 @@ UNPRIVILEGED="${UNPRIVILEGED:-1}"
 START="${START:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
+# A container created with neither of these can only be entered from the host
+# with `pct enter`, and the one-time sign-in needs an SSH tunnel into it from
+# wherever your VNC client is. The host's own authorized_keys is the default
+# because whoever is running this got here over SSH with one of those keys.
+SSH_KEYS="${SSH_KEYS:-/root/.ssh/authorized_keys}"
+PASSWORD="${PASSWORD:-}"
+
 run() {
 	echo "+ $*"
 
@@ -78,17 +85,40 @@ fi
 #              its own systemd cleanly.
 #   keyctl=1   Docker's own requirement in an unprivileged container: without
 #              it the daemon fails to start on a kernel keyring call.
-run pct create "$CTID" "$TEMPLATE" \
-	--hostname "$HOSTNAME_" \
-	--cores "$CORES" \
-	--memory "$MEMORY" \
-	--swap "$SWAP" \
-	--rootfs "${STORAGE}:${DISK}" \
-	--net0 "name=eth0,bridge=${BRIDGE},ip=dhcp" \
-	--features "nesting=1,keyctl=1" \
-	--unprivileged "$UNPRIVILEGED" \
-	--onboot 1 \
-	--description "MS Rewards farmer. Daily run, see /opt/rewards-farmer."
+CREATE=(pct create "$CTID" "$TEMPLATE"
+	--hostname "$HOSTNAME_"
+	--cores "$CORES"
+	--memory "$MEMORY"
+	--swap "$SWAP"
+	--rootfs "${STORAGE}:${DISK}"
+	--net0 "name=eth0,bridge=${BRIDGE},ip=dhcp"
+	--features "nesting=1,keyctl=1"
+	--unprivileged "$UNPRIVILEGED"
+	--onboot 1
+	--description "MS Rewards farmer. Daily run, see /opt/rewards-farmer.")
+
+if [ -n "$PASSWORD" ]; then
+	CREATE+=(--password "$PASSWORD")
+fi
+
+if [ -r "$SSH_KEYS" ]; then
+	echo "Authorising the keys in $SSH_KEYS for root in the container."
+
+	CREATE+=(--ssh-public-keys "$SSH_KEYS")
+elif [ -z "$PASSWORD" ]; then
+	# Not fatal: `pct enter` still works from here, and the sign-in can be
+	# reached by binding the VNC port to the LAN with a password instead. But it
+	# is the first thing that will not work as documented, so say so now.
+	echo
+	echo "No SSH keys at $SSH_KEYS and no PASSWORD set. The container will have"
+	echo "no way in except 'pct enter $CTID' from this host, which is not enough"
+	echo "for the SSH tunnel the one-time sign-in uses. Pass SSH_KEYS=<file> or"
+	echo "PASSWORD=<password>, or read the sign-in section of the README for the"
+	echo "way that needs neither."
+	echo
+fi
+
+run "${CREATE[@]}"
 
 if [ "$START" = "1" ]; then
 	run pct start "$CTID"
