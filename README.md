@@ -118,6 +118,8 @@ git clone https://github.com/User0332/rewards-farmer /opt/rewards-farmer
 /opt/rewards-farmer/deploy/proxmox/install.sh
 ```
 
+Clone **the repository and branch you are actually deploying** — a fork, or a branch that is not merged yet, is not the URL above, and cloning the wrong one gets you a working install of code that does not contain any of this. `create-lxc.sh` prints the right line for whatever checkout you ran it from, including how to push the checkout in with `pct push` when the repository is private.
+
 That installs Docker, builds the image and writes a `.env` you can edit. Add `--native` instead if you would rather not enable nesting: it installs Edge, the matching driver and a virtualenv, and schedules the run with a systemd timer.
 
 ## Signing in, on a machine with no screen

@@ -94,6 +94,20 @@ if [ "$START" = "1" ]; then
 	run pct start "$CTID"
 fi
 
+# Where this checkout came from, rather than a URL written into the script.
+# The two are not always the same repository - a fork, or a branch that is not
+# merged yet - and cloning the wrong one gets you a working install of code
+# that does not contain any of this.
+CHECKOUT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ORIGIN="$(git -C "$CHECKOUT" remote get-url origin 2>/dev/null || true)"
+BRANCH="$(git -C "$CHECKOUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+
+CLONE="git clone ${ORIGIN:-https://github.com/User0332/rewards-farmer} /opt/rewards-farmer"
+
+if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ] && [ "$BRANCH" != "HEAD" ]; then
+	CLONE="git clone --branch $BRANCH ${ORIGIN} /opt/rewards-farmer"
+fi
+
 cat <<EOF
 
 Container $CTID ($HOSTNAME_) is ready.
@@ -102,8 +116,16 @@ Next, inside it:
 
   pct enter $CTID
   apt-get update && apt-get install -y git
-  git clone https://github.com/User0332/rewards-farmer /opt/rewards-farmer
+  $CLONE
   /opt/rewards-farmer/deploy/proxmox/install.sh
+
+That clone line names the repository and branch this script was run from. A
+private repository needs credentials the container does not have, so push this
+checkout in instead:
+
+  tar czf /tmp/rewards-farmer.tgz -C $CHECKOUT .
+  pct push $CTID /tmp/rewards-farmer.tgz /root/rewards-farmer.tgz
+  pct exec $CTID -- bash -c 'mkdir -p /opt/rewards-farmer && tar xzf /root/rewards-farmer.tgz -C /opt/rewards-farmer && /opt/rewards-farmer/deploy/proxmox/install.sh'
 
 Then sign the browser profile in once - a headless node has no screen, so the
 install script explains how - and the daily run starts on its own.
