@@ -6,4 +6,6 @@ visual_search.json
 !nouns.txt
 Todo.md
 data-dir/
+state/
+.env
 __pycache__/

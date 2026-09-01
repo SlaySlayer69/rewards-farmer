@@ -6,14 +6,25 @@ before this runs, so import order does not matter.
 """
 
 import logging
+import logging.handlers
 import os
 import re
 import sys
+from pathlib import Path
 
 LEVEL_ENV_VAR = "REWARDS_FARMER_LOG_LEVEL"
 FILE_ENV_VAR = "REWARDS_FARMER_LOG_FILE"
+MAX_BYTES_ENV_VAR = "REWARDS_FARMER_LOG_MAX_BYTES"
+BACKUPS_ENV_VAR = "REWARDS_FARMER_LOG_BACKUPS"
 
 DEFAULT_LEVEL = "INFO"
+
+# A run writes a few hundred lines, and a scheduled install writes them every
+# day for as long as the machine is up. The file used to grow without limit,
+# which on a home server is a slow leak rather than an obvious failure: 5 MB
+# per file and four of them keeps roughly a season of runs in 25 MB.
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_BACKUPS = 4
 
 # Configuring the root logger switches on output for every library that logs,
 # not just ours. httpx emits an info line per ollama call, which buries the
@@ -84,12 +95,56 @@ def _resolve_level(level: str | int | None) -> int:
 	return resolved
 
 
+def _positive_int(variable: str, default: int) -> int:
+	raw = os.environ.get(variable, "").strip()
+
+	if not raw:
+		return default
+
+	try:
+		value = int(raw)
+	except ValueError:
+		return default
+
+	return value if value >= 0 else default
+
+
+def _file_handler(log_file: str) -> logging.Handler | None:
+	"""A rotating handler for `log_file`, or None if it cannot be opened.
+
+	A log file that cannot be written is a reason to log to the console only,
+	not a reason to fail the run: the directory may be missing on a fresh
+	install, or read-only on a volume that was mounted wrong, and neither
+	should cost a day's points.
+	"""
+	path = Path(log_file).expanduser()
+
+	try:
+		if path.parent and not path.parent.exists():
+			path.parent.mkdir(parents=True, exist_ok=True)
+
+		# utf-8 explicitly. Card descriptions are scraped from the page and are
+		# not ASCII outside the en-US market, and the Windows default encoding
+		# would raise on them.
+		return logging.handlers.RotatingFileHandler(
+			path,
+			maxBytes=_positive_int(MAX_BYTES_ENV_VAR, DEFAULT_MAX_BYTES),
+			backupCount=_positive_int(BACKUPS_ENV_VAR, DEFAULT_BACKUPS),
+			encoding="utf-8",
+		)
+	except OSError as exc:
+		logging.getLogger(__name__).warning("Could not open log file %s: %s", path, exc)
+
+		return None
+
+
 def setup_logging(level: str | int | None = None, log_file: str | None = None) -> None:
 	"""Configure the root logger. Calling this more than once is a no-op.
 
 	`level` defaults to $REWARDS_FARMER_LOG_LEVEL, then to INFO.
 	`log_file` defaults to $REWARDS_FARMER_LOG_FILE, and no file is written
-	when neither is set.
+	when neither is set. The file rotates, sized by
+	$REWARDS_FARMER_LOG_MAX_BYTES and $REWARDS_FARMER_LOG_BACKUPS.
 	"""
 	global _configured
 
@@ -118,12 +173,11 @@ def setup_logging(level: str | int | None = None, log_file: str | None = None) -
 		log_file = os.environ.get(FILE_ENV_VAR)
 
 	if log_file:
-		# utf-8 explicitly. Card descriptions are scraped from the page and are
-		# not ASCII outside the en-US market, and the Windows default encoding
-		# would raise on them.
-		file_handler = logging.FileHandler(log_file, encoding="utf-8")
-		file_handler.setFormatter(formatter)
-		root.addHandler(file_handler)
+		handler = _file_handler(log_file)
+
+		if handler is not None:
+			handler.setFormatter(formatter)
+			root.addHandler(handler)
 
 	for name in NOISY_LIBRARIES:
 		logging.getLogger(name).setLevel(logging.WARNING)

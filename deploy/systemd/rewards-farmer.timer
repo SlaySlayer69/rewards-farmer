@@ -1,0 +1,26 @@
+# The schedule for rewards-farmer.service.
+#
+# Persistent=true is the part that matters on a home server: if the machine was
+# off, suspended or migrated to another node at 09:00, the run happens shortly
+# after it comes back rather than being skipped until tomorrow. Skipped means
+# the day's points are gone.
+#
+# RandomizedDelaySec does the same job as the scheduler's jitter in the Docker
+# install: a run that starts at exactly 09:00:00 every single day is a pattern,
+# and not looking like a script is the point of this project.
+#
+# Edit the time with `systemctl edit rewards-farmer.timer` rather than here, so
+# a git pull does not undo it.
+
+[Unit]
+Description=Daily MS Rewards run
+Documentation=https://github.com/User0332/rewards-farmer
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+RandomizedDelaySec=90m
+Persistent=true
+Unit=rewards-farmer.service
+
+[Install]
+WantedBy=timers.target
