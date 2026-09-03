@@ -1,34 +1,122 @@
-# docker compose run --rm rewards-farmer
+# A daily run on a machine that is already on.
 #
-# Sign-in has to happen once by hand before this is useful: the profile in
-# data-dir starts logged out. See the Docker section of the README.
+#   docker compose build
+#   docker compose up -d            # runs once a day, from now on
+#   docker compose logs -f          # watch it
+#   docker compose run --rm rewards-farmer once     # one run, right now
+#   docker compose run --rm rewards-farmer status   # what the last run did
+#
+# Settings live in .env next to this file; copy .env.example and edit it.
+#
+# Sign-in has to happen once by hand before any of this is useful: the profile
+# in data-dir starts logged out. See the Proxmox section of the README.
 
 services:
   rewards-farmer:
     build: .
     image: rewards-farmer
+    container_name: rewards-farmer
+    # Once a day, and back up after a host reboot. The scheduler works out
+    # whether the day is already earned, so a restart does not mean a second
+    # run, and a machine that was off through the scheduled time runs as soon
+    # as it comes back.
+    restart: unless-stopped
+    # A real init as pid 1. The run starts a browser, which starts a dozen
+    # processes of its own, and something has to reap them when a run is killed
+    # for taking too long.
+    init: true
+    # Fixed, because Chromium writes it into the profile lock. With the random
+    # per-container name, a lock left behind by a killed browser names a host
+    # that no longer exists and cannot be told apart from a profile genuinely
+    # open elsewhere, so it would have to be cleared by hand.
+    hostname: rewards-farmer
     # Chromium wants more than the default 64MB of shared memory and crashes
     # partway through a page without it.
     shm_size: 1gb
+    # The image runs as uid 1000. Set these in .env to whatever owns data-dir on
+    # the host - inside an unprivileged Proxmox container that is usually still
+    # 1000, on a NAS mount it often is not.
+    user: "${REWARDS_UID:-1000}:${REWARDS_GID:-1000}"
     environment:
+      # When to run, in local time, plus a random offset so it is not the same
+      # second every day.
+      REWARDS_SCHEDULE: ${REWARDS_SCHEDULE:-09:00}
+      REWARDS_JITTER_MINUTES: ${REWARDS_JITTER_MINUTES:-90}
+      # The container has no zone of its own. Without this the schedule is UTC.
+      REWARDS_TZ: ${REWARDS_TZ:-UTC}
+      TZ: ${REWARDS_TZ:-UTC}
+      # Run a missed day as soon as the machine is back, rather than waiting for
+      # tomorrow's slot. This is the whole reason for not using cron.
+      REWARDS_CATCH_UP: ${REWARDS_CATCH_UP:-1}
+      REWARDS_RETRY_MINUTES: ${REWARDS_RETRY_MINUTES:-30}
+      REWARDS_MAX_RETRIES: ${REWARDS_MAX_RETRIES:-2}
+      REWARDS_RUN_TIMEOUT_MINUTES: ${REWARDS_RUN_TIMEOUT_MINUTES:-120}
       # trends needs no account or model, which is why it is the default here.
       # To use a model instead, set QUERY_SOURCE=llm and give OLLAMA_HOST an
       # address the container can reach: localhost inside a container is the
       # container, so ollama running on the host is host.docker.internal, and
       # 0.0.0.0 is a bind address that cannot be dialled at all.
-      #
-      #   QUERY_SOURCE=llm OLLAMA_HOST=host.docker.internal:11434 docker compose run --rm rewards-farmer
       QUERY_SOURCE: ${QUERY_SOURCE:-trends}
+      OLLAMA_HOST: ${OLLAMA_HOST:-}
       REWARDS_HEADLESS: "1"
       # Comma separated, one profile directory each. Leave unset for a single
       # profile in data-dir, which is the existing behaviour.
       REWARDS_ACCOUNTS: ${REWARDS_ACCOUNTS:-}
-      OLLAMA_HOST: ${OLLAMA_HOST:-}
+      REWARDS_FARMER_LOG_LEVEL: ${REWARDS_FARMER_LOG_LEVEL:-INFO}
     volumes:
       # Keeps the sign-in across container rebuilds.
       - ./data-dir:/app/data-dir
+      # What ran and when, plus the rotating log. Read from the host with
+      # `docker compose run --rm rewards-farmer status`, or just cat the json.
+      - ./state:/app/state
       # The visual search task uploads this file, which is gitignored and so is
       # never in the image. Create it first with
       # `python src/random_image_for_visual_search.py`; a path that does not
       # exist yet is mounted as an empty directory rather than a file.
       - ./visual_search.jpg:/app/visual_search.jpg:ro
+    # A container that lives for months writes a lot of json. Without this the
+    # docker log for it grows until the host's disk is full, which on a Proxmox
+    # node takes the other guests down with it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # The one-time sign-in, over VNC, because a Proxmox node has no screen and a
+  # profile signed in on Windows cannot be read here.
+  #
+  #   docker compose run --rm --service-ports signin
+  #
+  # then connect a VNC client to 127.0.0.1:5900 on the host, or tunnel it:
+  #
+  #   ssh -N -L 5900:127.0.0.1:5900 you@your-container
+  #
+  # Not started by `up`: it sits behind a compose profile, so it only runs when
+  # it is named.
+  signin:
+    build: .
+    image: rewards-farmer
+    profiles: ["signin"]
+    init: true
+    hostname: rewards-farmer
+    shm_size: 1gb
+    user: "${REWARDS_UID:-1000}:${REWARDS_GID:-1000}"
+    command: ["signin"]
+    environment:
+      TZ: ${REWARDS_TZ:-UTC}
+      # One account's directory, when REWARDS_ACCOUNTS is in use. Each account
+      # is signed in separately, since each is a Microsoft account of its own.
+      REWARDS_SIGNIN_ACCOUNT: ${REWARDS_SIGNIN_ACCOUNT:-}
+      # Optional with the loopback default, required when the bind below is not
+      # loopback: the script refuses to put an unauthenticated screen with a
+      # signed-in browser on it onto the network.
+      REWARDS_VNC_PASSWORD: ${REWARDS_VNC_PASSWORD:-}
+      REWARDS_VNC_BIND: ${REWARDS_VNC_BIND:-127.0.0.1}
+    ports:
+      # Loopback by default, reached with `ssh -N -L 5900:127.0.0.1:5900`. Set
+      # REWARDS_VNC_BIND=0.0.0.0 (with a password) when you cannot SSH into this
+      # machine at all, and unset it again once the sign-in is done.
+      - "${REWARDS_VNC_BIND:-127.0.0.1}:5900:5900"
+    volumes:
+      - ./data-dir:/app/data-dir

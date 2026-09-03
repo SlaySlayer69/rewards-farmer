@@ -16,7 +16,9 @@ that two profiles hold two independent, persistent identities, so it is opt in:
 import logging
 import os
 import shutil
+import socket
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -29,6 +31,8 @@ from selenium.common.exceptions import (
 
 import accounts
 import main
+import paths
+import run_state
 from constants import USER_DATA_DIR
 
 # Names that have to be refused, with the reason each one is not simply a
@@ -63,6 +67,23 @@ class EnvironmentTestCase(unittest.TestCase):
 
 	def setUp(self):
 		self.addCleanup(os.environ.pop, accounts.ENV_VAR, None)
+
+		# main() records what it did, and a suite that leaves that record in the
+		# checkout would also read a real install's counters when run on one.
+		state_dir = tempfile.mkdtemp(prefix="rewards-test-state-")
+		previous = os.environ.get(paths.STATE_DIR_ENV)
+
+		os.environ[paths.STATE_DIR_ENV] = state_dir
+
+		self.addCleanup(shutil.rmtree, state_dir, True)
+		self.addCleanup(_restore_env, paths.STATE_DIR_ENV, previous)
+
+
+def _restore_env(variable, value):
+	if value is None:
+		os.environ.pop(variable, None)
+	else:
+		os.environ[variable] = value
 
 
 class TestAccountConfiguration(EnvironmentTestCase):
@@ -283,6 +304,127 @@ class TestFailureIsolation(RunLoopTestCase):
 		main.run_account = boom
 
 		self.assertEqual(main.main(), 1)
+
+
+class TestOverlappingRuns(RunLoopTestCase):
+	"""A second run while one is in progress, which a schedule makes possible.
+
+	A timer that fires while yesterday's run is somehow still going, or a human
+	starting one by hand at the wrong moment. Chromium allows one process per
+	profile directory, so the second browser exits during startup and the run
+	reports a crash; refusing up front says what actually happened.
+	"""
+
+	def test_a_second_run_refuses_instead_of_starting_a_browser(self):
+		started = []
+
+		real = main.run_account
+		self.addCleanup(setattr, main, "run_account", real)
+
+		main.run_account = lambda account: started.append(account.name) or True
+
+		with run_state.run_lock() as held:
+			self.assertTrue(held)
+
+			self.assertEqual(main.main(), main.BUSY_EXIT_CODE)
+
+		self.assertEqual(started, [])
+
+	def test_a_run_records_what_it_did(self):
+		real = main.run_account
+		self.addCleanup(setattr, main, "run_account", real)
+		main.run_account = lambda account: True
+
+		self.assertEqual(main.main(), 0)
+
+		state = run_state.read()
+
+		self.assertEqual(state["last_exit_code"], 0)
+		self.assertEqual(state["last_accounts_ran"], 1)
+		self.assertFalse(state["running"])
+
+
+class TestStaleProfileLock(EnvironmentTestCase):
+	"""A profile lock left behind by a browser that was killed.
+
+	Chromium writes `SingletonLock` as a symlink to `hostname-pid` and removes
+	it on a clean exit only. After a power cut or an OOM kill it names a process
+	that no longer exists, and every run from then on exits during startup - on
+	an unattended install, every run for as long as nobody looks.
+	"""
+
+	def setUp(self):
+		super().setUp()
+
+		self.directory = tempfile.mkdtemp(prefix="rewards-test-profile-")
+		self.addCleanup(shutil.rmtree, self.directory, True)
+
+		self.account = accounts.Account(
+			name="test", user_data_dir=self.directory, profile_name="Default"
+		)
+		self.lock = os.path.join(self.directory, "SingletonLock")
+
+		self.addCleanup(os.environ.pop, "REWARDS_FORCE_PROFILE_UNLOCK", None)
+
+		logging.disable(logging.CRITICAL)
+		self.addCleanup(logging.disable, logging.NOTSET)
+
+	def write_lock(self, target):
+		os.symlink(target, self.lock)
+
+	def test_a_lock_from_a_dead_process_on_this_machine_is_cleared(self):
+		# A pid that cannot be running: the kernel would have to have wrapped
+		# all the way around and landed on it, and it is not this process.
+		self.write_lock(f"{socket.gethostname()}-4194303")
+
+		self.assertTrue(main.clear_stale_profile_lock(self.account))
+		self.assertFalse(os.path.lexists(self.lock))
+
+	def test_a_lock_held_by_a_live_process_is_left_alone(self):
+		self.write_lock(f"{socket.gethostname()}-{os.getpid()}")
+
+		self.assertFalse(main.clear_stale_profile_lock(self.account))
+		self.assertTrue(os.path.lexists(self.lock))
+
+	def test_a_lock_from_another_machine_is_left_alone(self):
+		# Indistinguishable from a profile genuinely open on another machine
+		# that shares the directory, and clearing that one corrupts it.
+		self.write_lock("some-other-host-4194303")
+
+		self.assertFalse(main.clear_stale_profile_lock(self.account))
+		self.assertTrue(os.path.lexists(self.lock))
+
+	def test_another_machines_lock_can_be_cleared_deliberately(self):
+		self.write_lock("some-other-host-4194303")
+
+		os.environ["REWARDS_FORCE_PROFILE_UNLOCK"] = "1"
+
+		self.assertTrue(main.clear_stale_profile_lock(self.account))
+		self.assertFalse(os.path.lexists(self.lock))
+
+	def test_an_unparseable_lock_is_treated_as_held(self):
+		# Refusing to start is recoverable. Starting a second browser against a
+		# profile that is genuinely open is not.
+		self.write_lock("nonsense")
+
+		self.assertFalse(main.clear_stale_profile_lock(self.account))
+		self.assertTrue(os.path.lexists(self.lock))
+
+	def test_no_lock_is_not_an_error(self):
+		self.assertFalse(main.clear_stale_profile_lock(self.account))
+
+	def test_the_companion_files_go_too(self):
+		# Chromium checks all three, so removing only the one it names leaves
+		# the profile just as unusable.
+		self.write_lock(f"{socket.gethostname()}-4194303")
+
+		for name in ("SingletonCookie", "SingletonSocket"):
+			os.symlink("whatever", os.path.join(self.directory, name))
+
+		self.assertTrue(main.clear_stale_profile_lock(self.account))
+
+		for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+			self.assertFalse(os.path.lexists(os.path.join(self.directory, name)))
 
 
 @unittest.skipUnless(

@@ -3,6 +3,8 @@ import logging
 import random
 import ollama
 
+import paths
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT_FOR_SEARCH_QUEST = (
@@ -108,10 +110,21 @@ def get_related_search_queries(seed_word: str, num_queries: int=20) -> Generator
 			"content": USER_PROMPT_FOR_SEARCH_QUERY_CONTINUATION
 		})
 
-NOUNS = [
-	noun.strip().lower() for noun in open("nouns.txt", "r").read().splitlines()
-	if len(noun.strip()) >= 3
-]
+def _nouns() -> list[str]:
+	"""The seed wordlist, read on demand.
+
+	Read here rather than at import, and against the repository rather than the
+	working directory. As a module level `open("nouns.txt")` this raised during
+	import, which meant a run started from anywhere but the repository root died
+	before it had configured logging, with a traceback about a missing file
+	instead of a message about where it was looking.
+	"""
+	with open(paths.nouns_file(), encoding="utf-8") as handle:
+		return [
+			noun.strip().lower() for noun in handle
+			if len(noun.strip()) >= 3
+		]
+
 
 def get_random_noun() -> str:
-	return random.choice(NOUNS)
+	return random.choice(_nouns())

@@ -1,0 +1,68 @@
+# One daily run, without Docker. Paired with rewards-farmer.timer, which is
+# what actually schedules it - this unit on its own only knows how to run once.
+#
+# For the Docker install, use the compose file instead; the scheduler inside the
+# container does the same job there.
+#
+#   sudo cp deploy/systemd/rewards-farmer.* /etc/systemd/system/
+#   sudo cp deploy/systemd/rewards-farmer.env.example /etc/rewards-farmer.env
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rewards-farmer.timer
+#
+#   systemctl list-timers rewards-farmer.timer   # when it next runs
+#   journalctl -u rewards-farmer.service -f      # what it did
+#   sudo systemctl start rewards-farmer.service  # a run right now
+
+[Unit]
+Description=MS Rewards farmer, one daily run
+Documentation=https://github.com/User0332/rewards-farmer
+# The first thing a run does is load rewards.bing.com, so starting before the
+# network is up is a guaranteed failure after a reboot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rewards
+Group=rewards
+WorkingDirectory=/opt/rewards-farmer
+
+# Optional, and the leading dash says so: an install with no overrides still
+# starts. Put REWARDS_SCHEDULE and friends here, or in the timer for the ones
+# systemd owns.
+EnvironmentFile=-/etc/rewards-farmer.env
+
+# /var/lib/rewards-farmer, created and owned by the service user on first
+# start. The browser profile, the run state and the browser's own scratch files
+# live there, which is what keeps /opt read-only below.
+StateDirectory=rewards-farmer
+Environment=HOME=/var/lib/rewards-farmer
+Environment=REWARDS_DATA_DIR=/var/lib/rewards-farmer/data-dir
+Environment=REWARDS_STATE_DIR=/var/lib/rewards-farmer/state
+Environment=REWARDS_FARMER_LOG_FILE=/var/lib/rewards-farmer/state/rewards-farmer.log
+Environment=REWARDS_HEADLESS=1
+Environment=QUERY_SOURCE=trends
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/rewards-farmer/.venv/bin/python /opt/rewards-farmer/src/main.py
+
+# A wedged browser has to end. Two hours is far longer than a real run, which
+# is 10 to 30 minutes per account.
+RuntimeMaxSec=7200
+TimeoutStopSec=60
+KillMode=mixed
+
+# A browser rendering pages from the open internet, so: no new privileges, no
+# view of the rest of the filesystem, and nothing writable outside its own
+# state directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

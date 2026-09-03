@@ -1,6 +1,5 @@
 import logging
 import log_utils
-import os
 import random
 import time
 from typing import Callable
@@ -11,12 +10,16 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, NoSuchElementException
 import tab_utils
+import paths
 import queries
 import mouse_trajectory
 import mimic_typing
 import element_selectors
 
-VISUAL_SEARCH_IMAGE_PATH = os.path.abspath("visual_search.jpg")
+# Anchored to the repository rather than to the working directory, so a run
+# started by a timer uploads the same file a run started by hand does. Point
+# REWARDS_VISUAL_SEARCH_IMAGE somewhere else to use your own image.
+VISUAL_SEARCH_IMAGE_PATH = str(paths.visual_search_image())
 
 logger = logging.getLogger(__name__)
 
